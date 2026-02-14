@@ -130,7 +130,7 @@ async def _fetch_single_market(gamma: GammaClient, slug: str):
 # ── 분석 엔진 ──
 
 async def analyze(text: str, ref_odds_text: str = "") -> str:
-    """메인 분석 함수 - 모든 마켗 타입 지원"""
+    """메인 분석 함수 - 모든 마켓 타입 지원"""
     geo_msg = geoblock_status_message()
     slug_type, slug = extract_slug(text)
     gamma = GammaClient()
@@ -188,7 +188,7 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
     if not markets:
         return f"오류: '{text}'에 대한 마켓을 찾을 수 없습니다."
 
-    # 2) 마켟 분류
+    # 2) 마켓 분류
     classified = {"moneyline": [], "handicap": [], "total": [],
                   "game_winner": [], "prop": [], "other": []}
 
@@ -218,7 +218,7 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
 
     for snap in markets[:1]:
         status = "🟢 활성" if snap.active else "🔴 비활성"
-        state = "마감됨" if snap.closed else "진행중!#��
+        state = "마감됨" if snap.closed else "진행중"
         lines.append(f"  상태: {status} | {state}")
         lines.append(f"  시작: {_fmt_dt(snap.start_date)}")
     lines.append(f"  조회: {_fmt_dt(markets[0].fetched_at)}")
@@ -282,7 +282,7 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
                 lines.append(f"  {label}: {price*100:.1f}% | 배당 {dec_odds:.2f}x ({amer})")
                 lines.append(f"    {_bar(price)} {price*100:.1f}%")
             overround = (total_prob - 1.0) * 100
-            lines.append(f"  내재확률 함3ᠠ: {total_prob*100:.1f}% (오버라운드: {overround:+.1f}%)")
+            lines.append(f"  내재확률 합계: {total_prob*100:.1f}% (오버라운드: {overround:+.1f}%)")
             if total_prob > 0:
                 lines.append("  공정확률:")
                 for label, price in sorted(yes_markets, key=lambda x: x[1], reverse=True):
@@ -290,9 +290,9 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
                     lines.append(f"    {label}: {fair*100:.1f}%")
         lines.append("")
 
-    # ══ 3) 함디캡 ══
+    # ══ 3) 핸디캡 ══
     if classified["handicap"]:
-        lines.append("## 3) 📐 함디캡")
+        lines.append("## 3) 📐 핸디캡")
         for snap, raw, question, git in classified["handicap"]:
             lines.append(f"  [{git or question}]")
             for o in snap.outcomes:
@@ -304,7 +304,7 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
 
     # ══ 4) 토탈 (오버/언더) ══
     if classified["total"]:
-        lines.append("## 4) 📊 토탈 (오벘-/언더)")
+        lines.append("## 4) 📊 토탈 (오버/언더)")
         for snap, raw, question, git in classified["total"]:
             lines.append(f"  [{git or question}]")
             for o in snap.outcomes:
@@ -339,7 +339,7 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
                 continue
             fair = o.price / total_prob if total_prob > 0 else o.price
 
-            # 외부 배당률 매츭
+            # 외부 배당률 매칭
             if ref_odds:
                 for ref_name, ref_val in ref_odds.items():
                     if ref_name.lower() in o.name.lower() or o.name.lower() in ref_name.lower():
@@ -366,7 +366,7 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
             for o in snap.outcomes:
                 if o.name.lower() == "yes" and o.price > 0:
                     label = git or question.replace("Will ", "").split("?")[0]
-                    # 같은 타책의 모든 yes를 모아서 total_prob 계산
+                    # 같은 타입의 모든 yes를 모아서 total_prob 계산
                     yes_prices = []
                     for s2, r2, q2, g2 in (classified.get("other", []) + classified.get("game_winner", [])):
                         for o2 in s2.outcomes:
@@ -408,11 +408,11 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
         cost_pct = item["cost"] * 100
 
         if ev_pct > 3:
-            verdict = "🟢 *�🟢 추천"
+            verdict = "🟢 강력 추천"
         elif ev_pct > 1:
             verdict = "🟡 추천"
         elif ev_pct > -1:
-            verdict = "⚪ 중+���"
+            verdict = "⚪ 중립"
         elif ev_pct > -3:
             verdict = "🟠 비추천"
         else:
@@ -435,7 +435,7 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
 
     # ══ 7) 마켓 품질 ══
     lines.append("## 7) 🏦 마켓 품질")
-    # 머니라인 마켟 품질만 표시
+    # 머니라인 마켓 품질만 표시
     quality_markets = classified["moneyline"] or classified.get("other", [])[:1]
     for snap, raw, question, git in quality_markets[:3]:
         liq = snap.liquidity or 0
@@ -453,7 +453,7 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
         dec_odds = 1.0 / best_outcome["price"] if best_outcome["price"] > 0 else 0
         lines.append(f"     배당: {dec_odds:.2f}x | EV: {best_outcome['ev']:+.2f}% | 켈리: {best_outcome['kelly']*100:.1f}%")
     elif best_outcome and best_outcome["ev"] > -1:
-        lines.append(f"  ⚖️ 중립 — 미세한 기횈 가능")
+        lines.append(f"  ⚖️ 중립 — 미세한 기회 가능")
         lines.append(f"     최선: {best_outcome['name']} (EV: {best_outcome['ev']:+.2f}%)")
     else:
         lines.append(f"  ❌ 현재 가치 베팅 없음")
