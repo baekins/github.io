@@ -274,7 +274,7 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
     lines.append("## 4) 🏦 마켟 품질")
     for snap in markets:
         liq = snap.liquidity or 0
-        vol = snap.volume_24h or 0
+        vol = snap.volume24hr or 0
         spreads = [o.spread for o in snap.outcomes if hasattr(o, 'spread') and o.spread]
         avg_spread = sum(spreads) / len(spreads) if spreads else None
         grade, grade_text = _grade_market(liq, vol, avg_spread)
