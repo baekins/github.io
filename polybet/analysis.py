@@ -12,13 +12,52 @@ from .math_utils import blended_fair_probs, devig_decimal_odds, fractional_kelly
 from .models import Candidate, MarketSnapshot
 from .parsing import extract_slug, parse_reference_odds
 
+try:
+    from .odds_api import fetch_external_odds
+except ImportError:
+    fetch_external_odds = None
+
 SEOUL = ZoneInfo("Asia/Seoul")
 
 
 def _fmt_dt(dt):
     if dt is None:
-        return "unknown"
-    return dt.astimezone(SEOUL).strftime("%Y-%m-%d %H:%M:%S %Z")
+        return "ì ì ìì"
+    return dt.astimezone(SEOUL).strftime("%Y-%m-%d %H:%M:%S KST")
+
+
+def _bar(ratio, width=20):
+    filled = int(ratio * width)
+    return "â" * filled + "â" * (width - filled)
+
+
+def _grade_market(liquidity, volume24hr, spread_avg):
+    score = 0
+    if liquidity and liquidity >= 50000:
+        score += 3
+    elif liquidity and liquidity >= 10000:
+        score += 2
+    elif liquidity and liquidity >= 1000:
+        score += 1
+
+    if volume24hr and volume24hr >= 10000:
+        score += 2
+    elif volume24hr and volume24hr >= 1000:
+        score += 1
+
+    if spread_avg is not None and spread_avg <= 0.02:
+        score += 2
+    elif spread_avg is not None and spread_avg <= 0.05:
+        score += 1
+
+    if score >= 6:
+        return "A", "ì°ì"
+    elif score >= 4:
+        return "B", "ìí¸"
+    elif score >= 2:
+        return "C", "ë³´íµ"
+    else:
+        return "D", "ì£¼ì"
 
 
 async def _hydrate_clob(snapshot: MarketSnapshot) -> tuple[MarketSnapshot, bool]:
@@ -41,7 +80,6 @@ async def _hydrate_clob(snapshot: MarketSnapshot) -> tuple[MarketSnapshot, bool]
                 out.mid = (out.best_bid + out.best_ask) / 2.0
                 out.spread = max(0.0, out.best_ask - out.best_bid)
         except Exception:
-            # Deterministic fail-open: unknown microstructure fields.
             out.best_bid, out.best_ask, out.mid, out.spread = None, None, None, None
 
         out.fee_rate_bps = await clob.fetch_fee_rate(out.token_id)
@@ -51,93 +89,124 @@ async def _hydrate_clob(snapshot: MarketSnapshot) -> tuple[MarketSnapshot, bool]
     return snapshot, fee_unknown
 
 
-async def _resolve_market(input_text: str) -> tuple[MarketSnapshot, list[Candidate]]:
+async def analyze(text: str, ref_odds_text: str = "") -> str:
+    geo_msg = geoblock_status_message()
+
+    slug_type, slug = extract_slug(text)
     gamma = GammaClient()
-    kind, slug = extract_slug(input_text)
 
-    if kind == "event" and slug:
-        event = await gamma.fetch_event_by_slug(slug)
-        markets = event.get("markets") or []
-        if markets:
-            return parse_market_payload(markets[0]), []
-        raise ValueError("Event has no market payload")
+    if slug_type and slug:
+        snapshot = await gamma.fetch_market(slug)
+        if not snapshot:
+            candidates = await collect_search_candidates(gamma, slug)
+            best = choose_best_candidate(candidates)
+            if not best:
+                return f"ì¤ë¥: '{slug}' ë§ì¼ì ì°¾ì ì ììµëë¤."
+            snapshot = await gamma.fetch_market(best.slug)
+    else:
+        candidates = await collect_search_candidates(gamma, text)
+        best = choose_best_candidate(candidates)
+        if not best:
+            return f"ì¤ë¥: '{text}'ì ëí ë§ì¼ì ì°¾ì ì ììµëë¤."
+        snapshot = await gamma.fetch_market(best.slug)
 
-    if kind == "market" and slug:
-        mkt = await gamma.fetch_market_by_slug(slug)
-        return parse_market_payload(mkt), []
+    if not snapshot:
+        return "ì¤ë¥: ë§ì¼ ë°ì´í°ë¥¼ ê°ì ¸ì¬ ì ììµëë¤."
 
-    search_data = await gamma.search(input_text)
-    candidates = collect_search_candidates(search_data)
-    best = choose_best_candidate(candidates)
-    if not best:
-        raise ValueError("No active candidate found from search")
-
-    if best.type == "event":
-        event = await gamma.fetch_event_by_slug(best.slug)
-        markets = event.get("markets") or []
-        if not markets:
-            raise ValueError("Selected event has no active markets")
-        return parse_market_payload(markets[0]), candidates[:5]
-
-    mkt = await gamma.fetch_market_by_slug(best.slug)
-    return parse_market_payload(mkt), candidates[:5]
-
-
-async def analyze_async(input_text: str) -> str:
-    snapshot, candidates = await _resolve_market(input_text)
     snapshot, fee_unknown = await _hydrate_clob(snapshot)
 
-    market_probs = {o.name: o.price for o in snapshot.outcomes}
-    odds_map = parse_reference_odds(input_text)
-    ref_probs = devig_decimal_odds(odds_map) if odds_map else None
-    fair_probs, fair_label = blended_fair_probs(market_probs, ref_probs)
+    # ì¸ë¶ ë°°ë¹ë¥  ìì§ ìë
+    external_odds = {}
+    if fetch_external_odds is not None:
+        try:
+            external_odds = await fetch_external_odds(snapshot.title)
+        except Exception:
+            external_odds = {}
 
-    confidence = "medium"
-    if not ref_probs:
-        confidence = "low"
-    if fee_unknown and SETTINGS.enable_clob_reads:
-        confidence = "low"
+    # ì°¸ì¡° ë°°ë¹ë¥  (ì¬ì©ì ìë ¥ or ì¸ë¶ API)
+    ref_odds = parse_reference_odds(ref_odds_text) if ref_odds_text else {}
 
-    lines: list[str] = ["# Polymarket Sports Auto-Analyst", "", "## 1) Market Snapshot"]
-    lines.append(f"- Title: {snapshot.title}")
-    lines.append(f"- Slug: `{snapshot.slug}`")
-    lines.append(f"- Start (Asia/Seoul): {_fmt_dt(snapshot.start_date)}")
-    lines.append(f"- End (Asia/Seoul): {_fmt_dt(snapshot.end_date)}")
-    lines.append(f"- Fetch timestamp (UTC): {snapshot.fetched_at.astimezone(timezone.utc).isoformat()}")
-    lines.append("- Outcomes:")
-    for outcome in sorted(snapshot.outcomes, key=lambda o: o.name.lower()):
-        lines.append(f"  - {outcome.name}: price={outcome.price:.4f}")
-        if SETTINGS.enable_clob_reads:
-            lines.append(
-                f"    - bestBid={outcome.best_bid if outcome.best_bid is not None else 'unknown'}, "
-                f"bestAsk={outcome.best_ask if outcome.best_ask is not None else 'unknown'}, "
-                f"mid={outcome.mid if outcome.mid is not None else 'unknown'}, "
-                f"spread={outcome.spread if outcome.spread is not None else 'unknown'}"
-            )
+    prices = {o.name: o.price for o in snapshot.outcomes}
+    mids = {}
+    if SETTINGS.enable_clob_reads:
+        mids = {o.name: o.mid for o in snapshot.outcomes if o.mid is not None}
+    fair_probs = blended_fair_probs(prices, mids, ref_odds)
 
-    lines.extend(["", "## 2) Market Quality + Costs"])
-    lines.append(f"- liquidity: {snapshot.liquidity if snapshot.liquidity is not None else 'unknown'}")
-    lines.append(f"- volume24hr: {snapshot.volume24hr if snapshot.volume24hr is not None else 'unknown'}")
-    lines.append(f"- openInterest: {snapshot.open_interest if snapshot.open_interest is not None else 'unknown'}")
+    # ê²°ê³¼ êµ¬ì±
+    lines = []
+    lines.append(f"# {snapshot.title}")
+    lines.append(f"Title: {snapshot.title}")
 
-    lines.extend(["", "## 3) Fair Probability Engine"])
-    lines.append(f"- Mode: {fair_label}")
-    if odds_map:
-        lines.append("- Parsed reference odds:")
-        for name, odd in sorted(odds_map.items(), key=lambda item: item[0].lower()):
-            lines.append(f"  - {name}: decimal_odds={odd:.3f}")
-        lines.append("- Reference confidence band: medium (manual odds provided)")
+    # ââ 1) ë§ì¼ ì ë³´ ââ
+    lines.append("")
+    lines.append("## 1) ð ë§ì¼ ì ë³´")
+    lines.append(f"  ìí: {'ð¢ íì±' if snapshot.active else 'ð´ ë¹íì±'} | {'ë§ê°ë¨' if snapshot.closed else 'ì§íì¤'}")
+    lines.append(f"  ìì: {_fmt_dt(snapshot.start_date)}")
+    lines.append(f"  ì¡°í: {_fmt_dt(snapshot.fetched_at)}")
+
+    if geo_msg:
+        lines.append(f"  â ï¸ {geo_msg}")
+
+    # ââ 2) ë°°ë¹ë¥  ââ
+    lines.append("")
+    lines.append("## 2) ð ë°°ë¹ë¥  ë¶ì")
+    for outcome in sorted(snapshot.outcomes, key=lambda o: o.price, reverse=True):
+        pct = outcome.price * 100
+        bar = _bar(outcome.price)
+        lines.append(f"  {outcome.name}")
+        lines.append(f"    Polymarket: {pct:5.1f}% {bar}")
+        if SETTINGS.enable_clob_reads and outcome.mid is not None:
+            mid_pct = outcome.mid * 100
+            lines.append(f"    Midê°ê²©:    {mid_pct:5.1f}% | ì¤íë ë: {outcome.spread:.4f}" if outcome.spread else f"    Midê°ê²©:    {mid_pct:5.1f}%")
+        fair = fair_probs.get(outcome.name, outcome.price)
+        fair_pct = fair * 100
+        lines.append(f"    ê³µì íë¥ :   {fair_pct:5.1f}% {_bar(fair)}")
+
+    # ââ 3) ì¸ë¶ ë°°ë¹ë¥  ë¹êµ ââ
+    if external_odds:
+        lines.append("")
+        lines.append("## 3) ð ì¸ë¶ ë¶ë©ì´ì»¤ ë°°ë¹ë¥ ")
+        for bookie, odds_data in external_odds.items():
+            lines.append(f"  [{bookie}]")
+            for name, odd in odds_data.items():
+                impl_prob = (1.0 / odd) * 100 if odd > 0 else 0
+                lines.append(f"    {name}: {odd:.2f} (ë´ì¬íì  {impl_prob:.1f}%)")
     else:
-        lines.append("- Reference odds: unknown")
-        lines.append("- Reference confidence band: low")
+        lines.append("")
+        lines.append("## 3) ð ì¸ë¶ ë°°ë¹ë¥ ")
+        lines.append("  ì¸ë¶ ë°°ë¹ë¥  ë°ì´í° ìì")
+        lines.append("  (The Odds API í¤ë¥¼ .envì ì¤ì íë©´ ìë ìì§)")
 
-    if SETTINGS.enable_clob_reads and fee_unknown:
-        lines.append("- Fee data: unknown for at least one token_id (confidence reduced)")
-    lines.append(f"- Confidence: {confidence}")
+    # ââ 4) ë§ì¼ íì§ ââ
+    spread_vals = [o.spread for o in snapshot.outcomes if o.spread is not None]
+    spread_avg = sum(spread_vals) / len(spread_vals) if spread_vals else None
+    grade, grade_text = _grade_market(snapshot.liquidity, snapshot.volume24hr, spread_avg)
 
-    lines.extend(["", "## 4) Edge + EV (after estimated costs)"])
-    recommended: list[tuple[str, float, float]] = []
-    pass_reasons: list[str] = []
+    lines.append("")
+    lines.append("## 4) ð¦ ë§ì¼ íì§")
+    lines.append(f"  ë±ê¸: {grade} ({grade_text})")
+
+    liq = snapshot.liquidity
+    vol = snapshot.volume24hr
+    oi = snapshot.open_interest
+
+    liq_str = f"${liq:,.0f}" if liq is not None else "ì ì ìì"
+    vol_str = f"${vol:,.0f}" if vol is not None else "ì ì ìì"
+    oi_str = f"${oi:,.0f}" if oi is not None else "ì ì ìì"
+
+    lines.append(f"  ì ëì±:    {liq_str}")
+    lines.append(f"  24hê±°ëë: {vol_str}")
+    lines.append(f"  ë¯¸ê²°ì ì½ì : {oi_str}")
+    if spread_avg is not None:
+        lines.append(f"  íê· ì¤íë ë: {spread_avg:.4f}")
+    if fee_unknown:
+        lines.append("  â ï¸ ììë£ ì ë³´ ì¼ë¶ ëë½")
+
+    # ââ 5) í¬ì íë¨ ââ
+    lines.append("")
+    lines.append("## 5) ð° í¬ì íë¨")
+
+    recommended = []
     for outcome in sorted(snapshot.outcomes, key=lambda o: o.name.lower()):
         fair = fair_probs.get(outcome.name, outcome.price)
         edge = fair - outcome.price
@@ -149,66 +218,43 @@ async def analyze_async(input_text: str) -> str:
         ev_ok = ev >= SETTINGS.ev_min
 
         decision = "RECOMMEND" if liq_ok and spread_ok and ev_ok else "PASS"
-        lines.append(
-            f"- {outcome.name}: fair={fair:.4f}, edge={edge:.4f}, cost={cost.total:.4f} "
-            f"(spread={cost.spread:.4f}, fee={cost.fee:.4f}, slippage={cost.slippage:.4f}), "
-            f"EV≈{ev:.4f}, decision={decision}"
-        )
+
+        edge_pct = edge * 100
+        ev_pct = ev * 100
+        emoji = "â" if decision == "RECOMMEND" else "â"
+
+        lines.append(f"  {emoji} {outcome.name}")
+        lines.append(f"    ì£ì§: {edge_pct:+.2f}% | EV: {ev_pct:+.2f}%")
+        lines.append(f"    ë¹ì©: {cost.total:.4f} (ì¤íë ë={cost.spread:.4f}, ììë£={cost.fee:.4f}, ì¬ë¦¬í¼ì§={cost.slippage:.4f})")
 
         if decision == "RECOMMEND":
+            kelly = fractional_kelly_fraction(fair, outcome.price, SETTINGS.kelly_fraction)
+            lines.append(f"    ì¼ë¦¬ë¹ì¨: {kelly:.2%} | decision=RECOMMEND")
             recommended.append((outcome.name, fair, outcome.price))
         else:
             reasons = []
             if not ev_ok:
-                reasons.append("EV below threshold")
+                reasons.append(f"EV {ev_pct:.2f}% < ê¸°ì¤ {SETTINGS.ev_min*100:.1f}%")
             if not liq_ok:
-                reasons.append("liquidity below LIQ_MIN")
+                reasons.append(f"ì ëì± ${liq or 0:,.0f} < ê¸°ì¤ ${SETTINGS.liq_min:,.0f}")
             if not spread_ok:
-                reasons.append("spread above SPREAD_MAX")
-            pass_reasons.append(f"{outcome.name}: {', '.join(reasons)}")
+                reasons.append(f"ì¤íë ë {spread_for_gate:.4f} > ê¸°ì¤ {SETTINGS.spread_max:.4f}")
+            lines.append(f"    ì¬ì : {', '.join(reasons) if reasons else 'ì¡°ê±´ ë¯¸ë¬'} | decision=PASS")
 
-    if not recommended:
-        lines.append("- Overall: PASS")
-        lines.append("- PASS reasons:")
-        for reason in pass_reasons:
-            lines.append(f"  - {reason}")
-
-    lines.extend(["", "## 5) Position Sizing (risk-first)"])
-    bankroll = SETTINGS.default_bankroll
-    lines.append(f"- Bankroll assumption: {bankroll:.2f} (default because bankroll was not provided)")
-    daily_cap = SETTINGS.max_daily_exposure * bankroll
-
-    if not recommended:
-        lines.append("- No positions sized because recommendation is PASS.")
-    else:
+    # ââ 6) ìµì¢ ìì½ ââ
+    lines.append("")
+    lines.append("## 6) ð ìµì¢ ìì½")
+    if recommended:
         for name, fair, price in recommended:
-            raw_fraction = fractional_kelly_fraction(fair, price, SETTINGS.fractional_kelly)
-            capped_fraction = min(raw_fraction, SETTINGS.max_bet_pct)
-            amount = capped_fraction * bankroll
-            lines.append(
-                f"- {name}: fracKelly={raw_fraction:.4f}, capped={capped_fraction:.4f}, "
-                f"suggested_bet=${amount:.2f}, daily_exposure_cap=${daily_cap:.2f}"
-            )
+            confidence = "ëì" if abs(fair - price) > 0.05 else "ë³´íµ"
+            lines.append(f"  â {name} ë§¤ì ì¶ì²")
+            lines.append(f"     Confidence: {confidence}")
+            lines.append(f"     íì¬ê° {price:.4f} â ê³µì ê° {fair:.4f}")
+    else:
+        lines.append("  íì¬ ì¶ì² ì¢ëª© ìì")
+        lines.append("  ëª¨ë  ê²°ê³¼ê° EV/ì ëì±/ì¤íë ë ê¸°ì¤ ë¯¸ë¬")
 
-    lines.extend(["", "## 6) What Would Change My Mind"])
-    lines.append("1. Verified injury/lineup change from an official source.")
-    lines.append("2. Weather/venue update relevant to expected game state.")
-    lines.append("3. External odds move >2% after de-vig normalization.")
-    lines.append("4. Liquidity jump that lowers estimated slippage/spread.")
-    lines.append("5. Official start time update affecting player availability.")
-
-    lines.extend(["", "## Compliance", f"- {geoblock_status_message()}"])
-
-    if candidates:
-        lines.extend(["", "## Other top candidates (up to 5)"])
-        for candidate in candidates[:5]:
-            lines.append(
-                f"- {candidate.title} (`{candidate.slug}`) active={candidate.active} closed={candidate.closed} "
-                f"liquidity={candidate.liquidity} volume24hr={candidate.volume24hr} sports_related={candidate.sports_related}"
-            )
+    lines.append("")
+    lines.append(f"Polybet v1.1 | ë¶ì ìë£")
 
     return "\n".join(lines)
-
-
-def analyze(input_text: str) -> str:
-    return asyncio.run(analyze_async(input_text))
