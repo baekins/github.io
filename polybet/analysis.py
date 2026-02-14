@@ -1,4 +1,4 @@
-"""Polybet – 스포츠 베팅 분석 엔진 v3 (모든 마켓 타입 지원)"""
+"""Polybet – 스포츠 베팅 분석 엔진 v4 (AI 실시간 분석 통합)"""
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +19,11 @@ try:
     from .odds_api import fetch_external_odds
 except ImportError:
     fetch_external_odds = None
+
+try:
+    from .ai_analysis import ai_research
+except ImportError:
+    ai_research = None
 
 SEOUL = ZoneInfo("Asia/Seoul")
 
@@ -129,8 +134,8 @@ async def _fetch_single_market(gamma: GammaClient, slug: str):
 
 # ── 분석 엔진 ──
 
-async def analyze(text: str, ref_odds_text: str = "") -> str:
-    """메인 분석 함수 - 모든 마켓 타입 지원"""
+async def analyze(text: str, ref_odds_text: str = "", api_key: str = "") -> str:
+    """메인 분석 함수 - 모든 마켓 타입 + AI 실시간 분석 지원"""
     geo_msg = geoblock_status_message()
     slug_type, slug = extract_slug(text)
     gamma = GammaClient()
@@ -265,7 +270,6 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
             lines.append("")
     else:
         lines.append("  머니라인 마켓 없음")
-        # 축구 등 Yes/No 기반 이벤트인지 확인
         yes_markets = []
         for snap, raw, question, git in (classified.get("other", []) + classified.get("game_winner", [])):
             for o in snap.outcomes:
@@ -314,8 +318,43 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
                     lines.append(f"    {o.name}: {o.price*100:.1f}% | 배당 {dec_odds:.2f}x ({amer})")
             lines.append("")
 
-    # ══ 5) 외부 배당률 비교 ══
-    lines.append("## 5) 🌐 외부 배당률 비교")
+    # ══ 5) AI 실시간 분석 ══
+    lines.append("## 5) 🤖 AI 실시간 분석")
+    if api_key and ai_research:
+        market_summary_parts = []
+        for snap, raw, question, git in classified.get("moneyline", []):
+            for o in snap.outcomes:
+                if o.price > 0:
+                    market_summary_parts.append(f"  {o.name}: {o.price*100:.1f}%")
+        markets_summary = "\n".join(market_summary_parts) if market_summary_parts else ""
+
+        try:
+            ai_result = await ai_research(
+                event_title or markets[0].title,
+                api_key,
+                markets_summary
+            )
+            if ai_result:
+                for line in ai_result.split("\n"):
+                    lines.append(f"  {line}")
+            else:
+                lines.append("  AI 분석 결과 없음")
+        except Exception as e:
+            lines.append(f"  AI 분석 오류: {e}")
+    elif not api_key:
+        lines.append("  Claude API 키 미입력")
+        lines.append("  💡 API 키 입력 시 실시간 웹 검색으로 다음 정보를 자동 분석합니다:")
+        lines.append("     - 선수 부상/결장 정보")
+        lines.append("     - 최근 팀 컨디션 (최근 5경기)")
+        lines.append("     - 상대 전적 (H2H)")
+        lines.append("     - 전문가 예측 및 커뮤니티 의견")
+        lines.append("     - 징크스, 메타 변화 등 특이사항")
+    else:
+        lines.append("  (anthropic 패키지 미설치)")
+    lines.append("")
+
+    # ══ 6) 외부 배당률 비교 ══
+    lines.append("## 6) 🌐 외부 배당률 비교")
     if ref_odds:
         lines.append("  [사용자 입력 참고 배당률]")
         for name, odds in ref_odds.items():
@@ -327,10 +366,9 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
         lines.append("     예) OG: 8.5, Team Liquid: 1.08")
     lines.append("")
 
-    # ══ 6) 투자 판단 ══
-    lines.append("## 6) 💰 투자 판단")
+    # ══ 7) 투자 판단 ══
+    lines.append("## 7) 💰 투자 판단")
 
-    # 머니라인 기반 분석
     ml_outcomes = []
     for snap, raw, question, git in classified["moneyline"]:
         total_prob = sum(o.price for o in snap.outcomes if o.price > 0)
@@ -339,7 +377,6 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
                 continue
             fair = o.price / total_prob if total_prob > 0 else o.price
 
-            # 외부 배당률 매칭
             if ref_odds:
                 for ref_name, ref_val in ref_odds.items():
                     if ref_name.lower() in o.name.lower() or o.name.lower() in ref_name.lower():
@@ -360,13 +397,11 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
                 "edge": edge, "ev": ev, "kelly": kelly, "cost": total_cost
             })
 
-    # Yes/No 기반 (축구 등) - 머니라인이 없을 때
     if not ml_outcomes:
         for snap, raw, question, git in (classified.get("other", []) + classified.get("game_winner", [])):
             for o in snap.outcomes:
                 if o.name.lower() == "yes" and o.price > 0:
                     label = git or question.replace("Will ", "").split("?")[0]
-                    # 같은 타입의 모든 yes를 모아서 total_prob 계산
                     yes_prices = []
                     for s2, r2, q2, g2 in (classified.get("other", []) + classified.get("game_winner", [])):
                         for o2 in s2.outcomes:
@@ -433,9 +468,8 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
         lines.append("  분석 가능한 머니라인 결과가 없습니다.")
         lines.append("")
 
-    # ══ 7) 마켓 품질 ══
-    lines.append("## 7) 🏦 마켓 품질")
-    # 머니라인 마켓 품질만 표시
+    # ══ 8) 마켓 품질 ══
+    lines.append("## 8) 🏦 마켓 품질")
     quality_markets = classified["moneyline"] or classified.get("other", [])[:1]
     for snap, raw, question, git in quality_markets[:3]:
         liq = snap.liquidity or 0
@@ -446,8 +480,8 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
         lines.append(f"    유동성: ${liq:,.0f} | 24h 거래량: ${vol:,.0f}")
     lines.append("")
 
-    # ══ 8) 최종 요약 ══
-    lines.append("## 8) 📋 최종 요약")
+    # ══ 9) 최종 요약 ══
+    lines.append("## 9) 📋 최종 요약")
     if best_outcome and best_outcome["ev"] > 1:
         lines.append(f"  ✅ 베팅 추천: {best_outcome['name']}")
         dec_odds = 1.0 / best_outcome["price"] if best_outcome["price"] > 0 else 0
