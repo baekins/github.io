@@ -22,13 +22,13 @@ SEOUL = ZoneInfo("Asia/Seoul")
 
 def _fmt_dt(dt):
     if dt is None:
-        return "ì ì ìì"
+        return "알 수 없음"
     return dt.astimezone(SEOUL).strftime("%Y-%m-%d %H:%M:%S KST")
 
 
 def _bar(ratio, width=20):
     filled = int(ratio * width)
-    return "â" * filled + "â" * (width - filled)
+    return "█" * filled + "░" * (width - filled)
 
 
 def _grade_market(liquidity, volume24hr, spread_avg):
@@ -51,13 +51,13 @@ def _grade_market(liquidity, volume24hr, spread_avg):
         score += 1
 
     if score >= 6:
-        return "A", "ì°ì"
+        return "A", "우수"
     elif score >= 4:
-        return "B", "ìí¸"
+        return "B", "양호"
     elif score >= 2:
-        return "C", "ë³´íµ"
+        return "C", "보통"
     else:
-        return "D", "ì£¼ì"
+        return "D", "주의"
 
 
 async def _hydrate_clob(snapshot: MarketSnapshot) -> tuple[MarketSnapshot, bool]:
@@ -101,21 +101,21 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
             candidates = await collect_search_candidates(gamma, slug)
             best = choose_best_candidate(candidates)
             if not best:
-                return f"ì¤ë¥: '{slug}' ë§ì¼ì ì°¾ì ì ììµëë¤."
+                return f"오류: '{slug}' 마켓을 찾을 수 없습니다."
             snapshot = await gamma.fetch_market(best.slug)
     else:
         candidates = await collect_search_candidates(gamma, text)
         best = choose_best_candidate(candidates)
         if not best:
-            return f"ì¤ë¥: '{text}'ì ëí ë§ì¼ì ì°¾ì ì ììµëë¤."
+            return f"오류: '{text}'에 대한 마켓을 찾을 수 없습니다."
         snapshot = await gamma.fetch_market(best.slug)
 
     if not snapshot:
-        return "ì¤ë¥: ë§ì¼ ë°ì´í°ë¥¼ ê°ì ¸ì¬ ì ììµëë¤."
+        return "오류: 마켓 데이터를 가져올 수 없습니다."
 
     snapshot, fee_unknown = await _hydrate_clob(snapshot)
 
-    # ì¸ë¶ ë°°ë¹ë¥  ìì§ ìë
+    # 외부 배당률 수집 시도
     external_odds = {}
     if fetch_external_odds is not None:
         try:
@@ -123,7 +123,7 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
         except Exception:
             external_odds = {}
 
-    # ì°¸ì¡° ë°°ë¹ë¥  (ì¬ì©ì ìë ¥ or ì¸ë¶ API)
+    # 참조 배당률 (사용자 입력 or 외부 API)
     ref_odds = parse_reference_odds(ref_odds_text) if ref_odds_text else {}
 
     prices = {o.name: o.price for o in snapshot.outcomes}
@@ -132,24 +132,24 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
         mids = {o.name: o.mid for o in snapshot.outcomes if o.mid is not None}
     fair_probs = blended_fair_probs(prices, mids, ref_odds)
 
-    # ê²°ê³¼ êµ¬ì±
+    # 결과 구성
     lines = []
     lines.append(f"# {snapshot.title}")
     lines.append(f"Title: {snapshot.title}")
 
-    # ââ 1) ë§ì¼ ì ë³´ ââ
+    # ── 1) 마켓 정보 ──
     lines.append("")
-    lines.append("## 1) ð ë§ì¼ ì ë³´")
-    lines.append(f"  ìí: {'ð¢ íì±' if snapshot.active else 'ð´ ë¹íì±'} | {'ë§ê°ë¨' if snapshot.closed else 'ì§íì¤'}")
-    lines.append(f"  ìì: {_fmt_dt(snapshot.start_date)}")
-    lines.append(f"  ì¡°í: {_fmt_dt(snapshot.fetched_at)}")
+    lines.append("## 1) 📊 마켓 정보")
+    lines.append(f"  상태: {'🟢 활성' if snapshot.active else '🔴 비활성'} | {'마감됨' if snapshot.closed else '진행중'}")
+    lines.append(f"  시작: {_fmt_dt(snapshot.start_date)}")
+    lines.append(f"  조회: {_fmt_dt(snapshot.fetched_at)}")
 
     if geo_msg:
-        lines.append(f"  â ï¸ {geo_msg}")
+        lines.append(f"  ⚠️ {geo_msg}")
 
-    # ââ 2) ë°°ë¹ë¥  ââ
+    # ── 2) 배당률 ──
     lines.append("")
-    lines.append("## 2) ð ë°°ë¹ë¥  ë¶ì")
+    lines.append("## 2) 📈 배당률 분석")
     for outcome in sorted(snapshot.outcomes, key=lambda o: o.price, reverse=True):
         pct = outcome.price * 100
         bar = _bar(outcome.price)
@@ -157,54 +157,54 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
         lines.append(f"    Polymarket: {pct:5.1f}% {bar}")
         if SETTINGS.enable_clob_reads and outcome.mid is not None:
             mid_pct = outcome.mid * 100
-            lines.append(f"    Midê°ê²©:    {mid_pct:5.1f}% | ì¤íë ë: {outcome.spread:.4f}" if outcome.spread else f"    Midê°ê²©:    {mid_pct:5.1f}%")
+            lines.append(f"    Mid가격:    {mid_pct:5.1f}% | 스프레드: {outcome.spread:.4f}" if outcome.spread else f"    Mid가격:    {mid_pct:5.1f}%")
         fair = fair_probs.get(outcome.name, outcome.price)
         fair_pct = fair * 100
-        lines.append(f"    ê³µì íë¥ :   {fair_pct:5.1f}% {_bar(fair)}")
+        lines.append(f"    공정확률:   {fair_pct:5.1f}% {_bar(fair)}")
 
-    # ââ 3) ì¸ë¶ ë°°ë¹ë¥  ë¹êµ ââ
+    # ── 3) 외부 배당률 비교 ──
     if external_odds:
         lines.append("")
-        lines.append("## 3) ð ì¸ë¶ ë¶ë©ì´ì»¤ ë°°ë¹ë¥ ")
+        lines.append("## 3) 🌐 외부 북메이커 배당률")
         for bookie, odds_data in external_odds.items():
             lines.append(f"  [{bookie}]")
             for name, odd in odds_data.items():
                 impl_prob = (1.0 / odd) * 100 if odd > 0 else 0
-                lines.append(f"    {name}: {odd:.2f} (ë´ì¬íì  {impl_prob:.1f}%)")
+                lines.append(f"    {name}: {odd:.2f} (내재확젔 {impl_prob:.1f}%)")
     else:
         lines.append("")
-        lines.append("## 3) ð ì¸ë¶ ë°°ë¹ë¥ ")
-        lines.append("  ì¸ë¶ ë°°ë¹ë¥  ë°ì´í° ìì")
-        lines.append("  (The Odds API í¤ë¥¼ .envì ì¤ì íë©´ ìë ìì§)")
+        lines.append("## 3) 🌐 외부 배당률")
+        lines.append("  외부 배당률 데이터 없음")
+        lines.append("  (The Odds API 키를 .env에 설정하면 자동 수집)")
 
-    # ââ 4) ë§ì¼ íì§ ââ
+    # ── 4) 마켓 품질 ──
     spread_vals = [o.spread for o in snapshot.outcomes if o.spread is not None]
     spread_avg = sum(spread_vals) / len(spread_vals) if spread_vals else None
     grade, grade_text = _grade_market(snapshot.liquidity, snapshot.volume24hr, spread_avg)
 
     lines.append("")
-    lines.append("## 4) ð¦ ë§ì¼ íì§")
-    lines.append(f"  ë±ê¸: {grade} ({grade_text})")
+    lines.append("## 4) 🏦 마켓 품질")
+    lines.append(f"  등급: {grade} ({grade_text})")
 
     liq = snapshot.liquidity
     vol = snapshot.volume24hr
     oi = snapshot.open_interest
 
-    liq_str = f"${liq:,.0f}" if liq is not None else "ì ì ìì"
-    vol_str = f"${vol:,.0f}" if vol is not None else "ì ì ìì"
-    oi_str = f"${oi:,.0f}" if oi is not None else "ì ì ìì"
+    liq_str = f"${liq:,.0f}" if liq is not None else "알 수 없음"
+    vol_str = f"${vol:,.0f}" if vol is not None else "알 수 없음"
+    oi_str = f"${oi:,.0f}" if oi is not None else "알 수 없음"
 
-    lines.append(f"  ì ëì±:    {liq_str}")
-    lines.append(f"  24hê±°ëë: {vol_str}")
-    lines.append(f"  ë¯¸ê²°ì ì½ì : {oi_str}")
+    lines.append(f"  유동성:    {liq_str}")
+    lines.append(f"  24h거래량: {vol_str}")
+    lines.append(f"  미결제약정: {oi_str}")
     if spread_avg is not None:
-        lines.append(f"  íê· ì¤íë ë: {spread_avg:.4f}")
+        lines.append(f"  평균스프레드: {spread_avg:.4f}")
     if fee_unknown:
-        lines.append("  â ï¸ ììë£ ì ë³´ ì¼ë¶ ëë½")
+        lines.append("  ⚠️ 수수료 정보 일부 누락")
 
-    # ââ 5) í¬ì íë¨ ââ
+    # ── 5) 투자 판단 ──
     lines.append("")
-    lines.append("## 5) ð° í¬ì íë¨")
+    lines.append("## 5) 💰 투자 판단")
 
     recommended = []
     for outcome in sorted(snapshot.outcomes, key=lambda o: o.name.lower()):
@@ -221,40 +221,40 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
 
         edge_pct = edge * 100
         ev_pct = ev * 100
-        emoji = "â" if decision == "RECOMMEND" else "â"
+        emoji = "✅" if decision == "RECOMMEND" else "❌"
 
         lines.append(f"  {emoji} {outcome.name}")
-        lines.append(f"    ì£ì§: {edge_pct:+.2f}% | EV: {ev_pct:+.2f}%")
-        lines.append(f"    ë¹ì©: {cost.total:.4f} (ì¤íë ë={cost.spread:.4f}, ììë£={cost.fee:.4f}, ì¬ë¦¬í¼ì§={cost.slippage:.4f})")
+        lines.append(f"    엣지: {edge_pct:+.2f}% | EV: {ev_pct:+.2f}%")
+        lines.append(f"    비용: {cost.total:.4f} (스프레드={cost.spread:.4f}, 수수료={cost.fee:.4f}, 슬리피지={cost.slippage:.4f})")
 
         if decision == "RECOMMEND":
             kelly = fractional_kelly_fraction(fair, outcome.price, SETTINGS.kelly_fraction)
-            lines.append(f"    ì¼ë¦¬ë¹ì¨: {kelly:.2%} | decision=RECOMMEND")
+            lines.append(f"    켈리비율: {kelly:.2%} | decision=RECOMMEND")
             recommended.append((outcome.name, fair, outcome.price))
         else:
             reasons = []
             if not ev_ok:
-                reasons.append(f"EV {ev_pct:.2f}% < ê¸°ì¤ {SETTINGS.ev_min*100:.1f}%")
+                reasons.append(f"EV {ev_pct:.2f}% < 기준 {SETTINGS.ev_min*100:.1f}%")
             if not liq_ok:
-                reasons.append(f"ì ëì± ${liq or 0:,.0f} < ê¸°ì¤ ${SETTINGS.liq_min:,.0f}")
+                reasons.append(f"유동성 ${liq or 0:,.0f} < 기준 ${SETTINGS.liq_min:,.0f}")
             if not spread_ok:
-                reasons.append(f"ì¤íë ë {spread_for_gate:.4f} > ê¸°ì¤ {SETTINGS.spread_max:.4f}")
-            lines.append(f"    ì¬ì : {', '.join(reasons) if reasons else 'ì¡°ê±´ ë¯¸ë¬'} | decision=PASS")
+                reasons.append(f"스프레드 {spread_for_gate:.4f} > 기준 {SETTINGS.spread_max:.4f}")
+            lines.append(f"    사유: {', '.join(reasons) if reasons else '조건 미달'} | decision=PASS")
 
-    # ââ 6) ìµì¢ ìì½ ââ
+    # ── 6) 최종 요약 ──
     lines.append("")
-    lines.append("## 6) ð ìµì¢ ìì½")
+    lines.append("## 6) 📋 최종 요약")
     if recommended:
         for name, fair, price in recommended:
-            confidence = "ëì" if abs(fair - price) > 0.05 else "ë³´íµ"
-            lines.append(f"  â {name} ë§¤ì ì¶ì²")
+            confidence = "높음" if abs(fair - price) > 0.05 else "보통"
+            lines.append(f"  ✅ {name} 매수 추천")
             lines.append(f"     Confidence: {confidence}")
-            lines.append(f"     íì¬ê° {price:.4f} â ê³µì ê° {fair:.4f}")
+            lines.append(f"     현재가 {price:.4f} → 공정가 {fair:.4f}")
     else:
-        lines.append("  íì¬ ì¶ì² ì¢ëª© ìì")
-        lines.append("  ëª¨ë  ê²°ê³¼ê° EV/ì ëì±/ì¤íë ë ê¸°ì¤ ë¯¸ë¬")
+        lines.append("  현재 추천 종목 없음")
+        lines.append("  모든 결과가 EV/유동성/스프레드 기준 미달")
 
     lines.append("")
-    lines.append(f"Polybet v1.1 | ë¶ì ìë£")
+    lines.append(f"Polybet v1.1 | 분석 완료")
 
     return "\n".join(lines)
