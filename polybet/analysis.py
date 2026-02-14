@@ -1,4 +1,4 @@
-"""Polybet – 스포츠 베팅 분석 엔진 v4 (AI 실시간 분석 통합)"""
+"""Polybet – 스포츠 베팅 분석 엔진 v5 (마켓명 표시 + 실전 추천 기준)"""
 from __future__ import annotations
 
 import asyncio
@@ -28,7 +28,7 @@ except ImportError:
 SEOUL = ZoneInfo("Asia/Seoul")
 
 
-# ── 유틸 ──
+# ─── 유틸 ───
 
 def _fmt_dt(dt):
     if dt is None:
@@ -38,7 +38,7 @@ def _fmt_dt(dt):
 
 def _bar(ratio, width=20):
     filled = int(ratio * width)
-    return "\u2588" * filled + "\u2591" * (width - filled)
+    return "█" * filled + "░" * (width - filled)
 
 
 def _dec_to_american(dec_odds):
@@ -67,10 +67,43 @@ def _classify_market(question: str, group_item_title: str) -> str:
         return "moneyline"
     if "kill" in q or "first" in q or "tower" in q or "baron" in q or "dragon" in q:
         return "prop"
-    # 축구 머니라인 (Will X win on DATE?)
     if "will" in q and ("win" in q or "end in a draw" in q):
         return "moneyline"
     return "other"
+
+
+def _market_label(question: str, git: str, outcome_name: str) -> str:
+    """마켓+아웃컴에 대한 읽기 좋은 라벨 생성"""
+    name_lower = outcome_name.lower()
+    if name_lower not in ("yes", "no"):
+        return outcome_name
+
+    # Yes/No인 경우 질문에서 의미 추출
+    q = question.strip()
+    if q.endswith("?"):
+        q = q[:-1]
+
+    # "Will X win" 패턴
+    m = re.match(r"(?i)will\s+(.+?)\s+(win|advance|qualify|beat)", q)
+    if m:
+        subject = m.group(1).strip()
+        if name_lower == "yes":
+            return f"{subject} 승리"
+        else:
+            return f"{subject} 패배/무"
+
+    # "Will it end in a draw" 패턴
+    if "draw" in q.lower():
+        if name_lower == "yes":
+            return "무승부"
+        else:
+            return "승패 결정"
+
+    # 기본: 질문 + Yes/No
+    short_q = q.replace("Will ", "").replace("will ", "")
+    if len(short_q) > 30:
+        short_q = short_q[:30] + "..."
+    return f"{short_q} → {'예' if name_lower == 'yes' else '아니오'}"
 
 
 def _grade_market(liquidity, volume24hr, spread_avg):
@@ -111,7 +144,6 @@ async def _fetch_event_markets(gamma: GammaClient, slug: str):
                 markets = []
                 for m in markets_raw:
                     snap = parse_market_payload(m)
-                    # raw 데이터 보존 (groupItemTitle 등)
                     snap.raw = m if isinstance(m, dict) else {}
                     markets.append(snap)
                 return event_title, markets
@@ -212,7 +244,7 @@ async def analyze(text: str, ref_odds_text: str = "", api_key: str = "") -> str:
     lines.append(f"# {event_title or markets[0].title}")
     lines.append("")
 
-    # ══ 1) 이벤트 정보 ══
+    # ═══ 1) 이벤트 정보 ═══
     lines.append("## 1) 📊 이벤트 정보")
     total_markets = len(markets)
     ml_count = len(classified["moneyline"])
@@ -231,7 +263,7 @@ async def analyze(text: str, ref_odds_text: str = "", api_key: str = "") -> str:
         lines.append(f"  ⚠️ {geo_msg}")
     lines.append("")
 
-    # ══ 2) 머니라인 (핵심) ══
+    # ═══ 2) 머니라인 (핵심) ═══
     lines.append("## 2) 💰 머니라인 (Match Winner)")
     if classified["moneyline"]:
         for snap, raw, question, git in classified["moneyline"]:
@@ -239,7 +271,7 @@ async def analyze(text: str, ref_odds_text: str = "", api_key: str = "") -> str:
             if not outcomes:
                 continue
 
-            lines.append(f"  [{git or question}]")
+            lines.append(f"  📌 {git or question}")
             lines.append("")
 
             for o in outcomes:
@@ -249,7 +281,8 @@ async def analyze(text: str, ref_odds_text: str = "", api_key: str = "") -> str:
                 dec_odds = 1.0 / price
                 amer = _dec_to_american(dec_odds)
                 pct = price * 100
-                lines.append(f"  {o.name}")
+                label = _market_label(question, git, o.name)
+                lines.append(f"  {label}")
                 lines.append(f"    확률: {pct:.1f}% | 배당: {dec_odds:.2f}x ({amer})")
                 lines.append(f"    {_bar(price)} {pct:.1f}%")
                 lines.append("")
@@ -266,66 +299,79 @@ async def analyze(text: str, ref_odds_text: str = "", api_key: str = "") -> str:
                     if o.price > 0:
                         fair = o.price / total_prob
                         fair_odds = 1.0 / fair
-                        lines.append(f"    {o.name}: {fair*100:.1f}% (공정배당 {fair_odds:.2f}x)")
+                        label = _market_label(question, git, o.name)
+                        lines.append(f"    {label}: {fair*100:.1f}% (공정배당 {fair_odds:.2f}x)")
             lines.append("")
     else:
-        lines.append("  머니라인 마켓 없음")
+        # 머니라인 없음 - Yes/No 기반 이벤트
         yes_markets = []
         for snap, raw, question, git in (classified.get("other", []) + classified.get("game_winner", [])):
             for o in snap.outcomes:
                 if o.name.lower() == "yes" and o.price > 0:
-                    label = git or question.replace("Will ", "").split("?")[0]
-                    yes_markets.append((label, o.price))
+                    label = _market_label(question, git, o.name)
+                    yes_markets.append((label, o.price, question, git))
                     break
         if yes_markets:
-            lines.append("  [Yes/No 기반 이벤트 결과]")
-            total_prob = sum(p for _, p in yes_markets)
-            for label, price in sorted(yes_markets, key=lambda x: x[1], reverse=True):
+            lines.append("  📌 경기 결과 마켓")
+            lines.append("")
+            total_prob = sum(p for _, p, _, _ in yes_markets)
+            for label, price, q, g in sorted(yes_markets, key=lambda x: x[1], reverse=True):
                 dec_odds = 1.0 / price
                 amer = _dec_to_american(dec_odds)
                 lines.append(f"  {label}: {price*100:.1f}% | 배당 {dec_odds:.2f}x ({amer})")
                 lines.append(f"    {_bar(price)} {price*100:.1f}%")
             overround = (total_prob - 1.0) * 100
-            lines.append(f"  내재확률 합계: {total_prob*100:.1f}% (오버라운드: {overround:+.1f}%)")
+            lines.append(f"\n  내재확률 합계: {total_prob*100:.1f}% (오버라운드: {overround:+.1f}%)")
             if total_prob > 0:
                 lines.append("  공정확률:")
-                for label, price in sorted(yes_markets, key=lambda x: x[1], reverse=True):
+                for label, price, q, g in sorted(yes_markets, key=lambda x: x[1], reverse=True):
                     fair = price / total_prob
                     lines.append(f"    {label}: {fair*100:.1f}%")
+        else:
+            lines.append("  머니라인 마켓 없음")
         lines.append("")
 
-    # ══ 3) 핸디캡 ══
+    # ═══ 3) 핸디캡 ═══
     if classified["handicap"]:
         lines.append("## 3) 📐 핸디캡")
         for snap, raw, question, git in classified["handicap"]:
-            lines.append(f"  [{git or question}]")
+            lines.append(f"  📌 {git or question}")
             for o in snap.outcomes:
                 if o.price > 0:
                     dec_odds = 1.0 / o.price
                     amer = _dec_to_american(dec_odds)
-                    lines.append(f"    {o.name}: {o.price*100:.1f}% | 배당 {dec_odds:.2f}x ({amer})")
+                    label = _market_label(question, git, o.name)
+                    lines.append(f"    {label}: {o.price*100:.1f}% | 배당 {dec_odds:.2f}x ({amer})")
             lines.append("")
 
-    # ══ 4) 토탈 (오버/언더) ══
+    # ═══ 4) 토탈 (오버/언더) ═══
     if classified["total"]:
         lines.append("## 4) 📊 토탈 (오버/언더)")
         for snap, raw, question, git in classified["total"]:
-            lines.append(f"  [{git or question}]")
+            lines.append(f"  📌 {git or question}")
             for o in snap.outcomes:
                 if o.price > 0:
                     dec_odds = 1.0 / o.price
                     amer = _dec_to_american(dec_odds)
-                    lines.append(f"    {o.name}: {o.price*100:.1f}% | 배당 {dec_odds:.2f}x ({amer})")
+                    label = _market_label(question, git, o.name)
+                    lines.append(f"    {label}: {o.price*100:.1f}% | 배당 {dec_odds:.2f}x ({amer})")
             lines.append("")
 
-    # ══ 5) AI 실시간 분석 ══
+    # ═══ 5) AI 실시간 분석 ═══
     lines.append("## 5) 🤖 AI 실시간 분석")
     if api_key and ai_research:
         market_summary_parts = []
         for snap, raw, question, git in classified.get("moneyline", []):
             for o in snap.outcomes:
                 if o.price > 0:
-                    market_summary_parts.append(f"  {o.name}: {o.price*100:.1f}%")
+                    label = _market_label(question, git, o.name)
+                    market_summary_parts.append(f"  {label}: {o.price*100:.1f}%")
+        if not market_summary_parts:
+            for snap, raw, question, git in (classified.get("other", []) + classified.get("game_winner", [])):
+                for o in snap.outcomes:
+                    if o.name.lower() == "yes" and o.price > 0:
+                        label = _market_label(question, git, o.name)
+                        market_summary_parts.append(f"  {label}: {o.price*100:.1f}%")
         markets_summary = "\n".join(market_summary_parts) if market_summary_parts else ""
 
         try:
@@ -353,7 +399,7 @@ async def analyze(text: str, ref_odds_text: str = "", api_key: str = "") -> str:
         lines.append("  (anthropic 패키지 미설치)")
     lines.append("")
 
-    # ══ 6) 외부 배당률 비교 ══
+    # ═══ 6) 외부 배당률 비교 ═══
     lines.append("## 6) 🌐 외부 배당률 비교")
     if ref_odds:
         lines.append("  [사용자 입력 참고 배당률]")
@@ -362,77 +408,126 @@ async def analyze(text: str, ref_odds_text: str = "", api_key: str = "") -> str:
             lines.append(f"  {name}: 배당 {odds:.2f}x (내재 {prob*100:.1f}%)")
     else:
         lines.append("  외부 배당률 없음")
-        lines.append("  💡 참고 배당률 입력 시 더 정확한 엣지 분석 가능")
+        lines.append("  💡 참고 배당률 입력 시 더 정확한 웃지 분석 가능")
         lines.append("     예) OG: 8.5, Team Liquid: 1.08")
     lines.append("")
 
-    # ══ 7) 투자 판단 ══
+    # ═══ 7) 투자 판단 ═══
     lines.append("## 7) 💰 투자 판단")
 
-    ml_outcomes = []
+    all_outcomes = []
+
+    # 머니라인 기반
     for snap, raw, question, git in classified["moneyline"]:
         total_prob = sum(o.price for o in snap.outcomes if o.price > 0)
         for o in snap.outcomes:
             if o.price <= 0:
                 continue
+            label = _market_label(question, git, o.name)
             fair = o.price / total_prob if total_prob > 0 else o.price
 
+            # 외부 배당률 매칭
+            matched_ref = False
             if ref_odds:
                 for ref_name, ref_val in ref_odds.items():
-                    if ref_name.lower() in o.name.lower() or o.name.lower() in ref_name.lower():
+                    if ref_name.lower() in label.lower() or label.lower() in ref_name.lower() or ref_name.lower() in o.name.lower():
                         fair = 1.0 / ref_val if ref_val > 0 else fair
+                        matched_ref = True
                         break
 
-            spread_cost = 0.005
-            slippage = 0.005
-            total_cost = spread_cost + slippage
-            edge = fair - o.price - total_cost
+            # 비용: Polymarket은 수수료 없음, 스프레드만
+            spread_cost = 0.002
+            edge = fair - o.price - spread_cost
             ev = edge / o.price * 100 if o.price > 0 else 0
+
+            # 오버라운드 보너스: 오버라운드가 크면 공정확률과 시장가 차이가 큼 = 기회
+            overround_bonus = (total_prob - 1.0) * 50 if total_prob > 1.0 else 0
+
             kelly = 0
             if fair > o.price and o.price > 0:
                 kelly = fractional_kelly_fraction(fair, o.price, 0.25)
 
-            ml_outcomes.append({
-                "name": o.name, "price": o.price, "fair": fair,
-                "edge": edge, "ev": ev, "kelly": kelly, "cost": total_cost
+            all_outcomes.append({
+                "name": label, "price": o.price, "fair": fair,
+                "edge": edge, "ev": ev + overround_bonus, "raw_ev": ev,
+                "kelly": kelly, "cost": spread_cost,
+                "type": "moneyline", "question": question,
+                "matched_ref": matched_ref
             })
 
-    if not ml_outcomes:
+    # Yes/No 기반 (축구 등)
+    if not any(item["type"] == "moneyline" for item in all_outcomes):
+        yes_items = []
         for snap, raw, question, git in (classified.get("other", []) + classified.get("game_winner", [])):
             for o in snap.outcomes:
                 if o.name.lower() == "yes" and o.price > 0:
-                    label = git or question.replace("Will ", "").split("?")[0]
-                    yes_prices = []
-                    for s2, r2, q2, g2 in (classified.get("other", []) + classified.get("game_winner", [])):
-                        for o2 in s2.outcomes:
-                            if o2.name.lower() == "yes" and o2.price > 0:
-                                yes_prices.append(o2.price)
-                    total_prob = sum(yes_prices) if yes_prices else 1.0
-                    fair = o.price / total_prob if total_prob > 0 else o.price
-
-                    if ref_odds:
-                        for ref_name, ref_val in ref_odds.items():
-                            if ref_name.lower() in label.lower() or label.lower() in ref_name.lower():
-                                fair = 1.0 / ref_val if ref_val > 0 else fair
-                                break
-
-                    spread_cost = 0.005
-                    slippage = 0.005
-                    total_cost = spread_cost + slippage
-                    edge = fair - o.price - total_cost
-                    ev = edge / o.price * 100 if o.price > 0 else 0
-                    kelly = 0
-                    if fair > o.price and o.price > 0:
-                        kelly = fractional_kelly_fraction(fair, o.price, 0.25)
-
-                    ml_outcomes.append({
-                        "name": label, "price": o.price, "fair": fair,
-                        "edge": edge, "ev": ev, "kelly": kelly, "cost": total_cost
-                    })
+                    label = _market_label(question, git, o.name)
+                    yes_items.append((label, o.price, question, git, snap))
                     break
 
+        total_prob = sum(p for _, p, _, _, _ in yes_items) if yes_items else 1.0
+        for label, price, question, git, snap in yes_items:
+            fair = price / total_prob if total_prob > 0 else price
+
+            matched_ref = False
+            if ref_odds:
+                for ref_name, ref_val in ref_odds.items():
+                    if ref_name.lower() in label.lower() or label.lower() in ref_name.lower():
+                        fair = 1.0 / ref_val if ref_val > 0 else fair
+                        matched_ref = True
+                        break
+
+            spread_cost = 0.002
+            edge = fair - price - spread_cost
+            ev = edge / price * 100 if price > 0 else 0
+            overround_bonus = (total_prob - 1.0) * 50 if total_prob > 1.0 else 0
+
+            kelly = 0
+            if fair > price and price > 0:
+                kelly = fractional_kelly_fraction(fair, price, 0.25)
+
+            all_outcomes.append({
+                "name": label, "price": price, "fair": fair,
+                "edge": edge, "ev": ev + overround_bonus, "raw_ev": ev,
+                "kelly": kelly, "cost": spread_cost,
+                "type": "yes_no", "question": question,
+                "matched_ref": matched_ref
+            })
+
+    # 핸디캡/토탈도 분석에 포함
+    for mtype, cat_name in [("handicap", "핸디캡"), ("total", "토탈")]:
+        for snap, raw, question, git in classified.get(mtype, []):
+            total_prob = sum(o.price for o in snap.outcomes if o.price > 0)
+            for o in snap.outcomes:
+                if o.price <= 0:
+                    continue
+                label = _market_label(question, git, o.name)
+                fair = o.price / total_prob if total_prob > 0 else o.price
+                spread_cost = 0.002
+                edge = fair - o.price - spread_cost
+                ev = edge / o.price * 100 if o.price > 0 else 0
+                overround_bonus = (total_prob - 1.0) * 50 if total_prob > 1.0 else 0
+                kelly = 0
+                if fair > o.price and o.price > 0:
+                    kelly = fractional_kelly_fraction(fair, o.price, 0.25)
+
+                all_outcomes.append({
+                    "name": f"[{cat_name}] {label}",
+                    "price": o.price, "fair": fair,
+                    "edge": edge, "ev": ev + overround_bonus, "raw_ev": ev,
+                    "kelly": kelly, "cost": spread_cost,
+                    "type": mtype, "question": question,
+                    "matched_ref": False
+                })
+
+    # 정렬: EV 높은 순
+    all_outcomes.sort(key=lambda x: x["ev"], reverse=True)
+
     best_outcome = None
-    for item in sorted(ml_outcomes, key=lambda x: x["ev"], reverse=True):
+    shown = 0
+    for item in all_outcomes:
+        if shown >= 8:
+            break
         if best_outcome is None:
             best_outcome = item
 
@@ -442,13 +537,14 @@ async def analyze(text: str, ref_odds_text: str = "", api_key: str = "") -> str:
         ev_pct = item["ev"]
         cost_pct = item["cost"] * 100
 
-        if ev_pct > 3:
+        # 실전 기준: 더 관대한 추천
+        if ev_pct > 2:
             verdict = "🟢 강력 추천"
-        elif ev_pct > 1:
+        elif ev_pct > 0.5:
             verdict = "🟡 추천"
-        elif ev_pct > -1:
-            verdict = "⚪ 중립"
-        elif ev_pct > -3:
+        elif ev_pct > -0.5:
+            verdict = "⚪ 소액 가능"
+        elif ev_pct > -2:
             verdict = "🟠 비추천"
         else:
             verdict = "🔴 패스"
@@ -459,17 +555,20 @@ async def analyze(text: str, ref_odds_text: str = "", api_key: str = "") -> str:
         lines.append(f"  {item['name']}: {verdict}")
         lines.append(f"    시장가: {price_pct:.1f}% ({dec_odds:.2f}x, {amer})")
         lines.append(f"    공정확률: {fair_pct:.1f}%")
-        lines.append(f"    엣지: {edge_pct:+.2f}% | EV: {ev_pct:+.2f}% | 비용: {cost_pct:.2f}%")
+        lines.append(f"    웃지: {edge_pct:+.2f}% | EV: {ev_pct:+.2f}%")
         if item["kelly"] > 0:
             lines.append(f"    켈리 (1/4): {item['kelly']*100:.1f}% 배팅 권장")
+        if item.get("matched_ref"):
+            lines.append(f"    📋 외부 배당률 기반 분석")
+        lines.append("")
+        shown += 1
+
+    if not all_outcomes:
+        lines.append("  분석 가능한 결과가 없습니다.")
         lines.append("")
 
-    if not ml_outcomes:
-        lines.append("  분석 가능한 머니라인 결과가 없습니다.")
-        lines.append("")
-
-    # ══ 8) 마켓 품질 ══
-    lines.append("## 8) 🏦 마켓 품질")
+    # ═══ 8) 마켓 품질 ═══
+    lines.append("## 8) 🏪 마켓 품질")
     quality_markets = classified["moneyline"] or classified.get("other", [])[:1]
     for snap, raw, question, git in quality_markets[:3]:
         liq = snap.liquidity or 0
@@ -480,14 +579,20 @@ async def analyze(text: str, ref_odds_text: str = "", api_key: str = "") -> str:
         lines.append(f"    유동성: ${liq:,.0f} | 24h 거래량: ${vol:,.0f}")
     lines.append("")
 
-    # ══ 9) 최종 요약 ══
+    # ═══ 9) 최종 요약 ═══
     lines.append("## 9) 📋 최종 요약")
-    if best_outcome and best_outcome["ev"] > 1:
+    if best_outcome and best_outcome["ev"] > 0.5:
         lines.append(f"  ✅ 베팅 추천: {best_outcome['name']}")
         dec_odds = 1.0 / best_outcome["price"] if best_outcome["price"] > 0 else 0
-        lines.append(f"     배당: {dec_odds:.2f}x | EV: {best_outcome['ev']:+.2f}% | 켈리: {best_outcome['kelly']*100:.1f}%")
-    elif best_outcome and best_outcome["ev"] > -1:
-        lines.append(f"  ⚖️ 중립 — 미세한 기회 가능")
+        lines.append(f"     배당: {dec_odds:.2f}x | EV: {best_outcome['ev']:+.2f}%")
+        if best_outcome["kelly"] > 0:
+            lines.append(f"     켈리 배팅: 자본의 {best_outcome['kelly']*100:.1f}%")
+        # 추가 추천 찾기
+        extra = [x for x in all_outcomes[1:] if x["ev"] > 0.5]
+        if extra:
+            lines.append(f"     + {len(extra)}개 추가 기회 있음")
+    elif best_outcome and best_outcome["ev"] > -0.5:
+        lines.append(f"  ⚖️ 소액 베팅 가능")
         lines.append(f"     최선: {best_outcome['name']} (EV: {best_outcome['ev']:+.2f}%)")
     else:
         lines.append(f"  ❌ 현재 가치 베팅 없음")
@@ -496,7 +601,8 @@ async def analyze(text: str, ref_odds_text: str = "", api_key: str = "") -> str:
 
     if not ref_odds:
         lines.append("")
-        lines.append("  💡 팁: 참고 배당률 입력으로 정확도 향상 가능")
-        lines.append("     예) OG: 8.5, Team Liquid: 1.08")
+        lines.append("  💡 팁: 외부 배당률 입력으로 더 정확한 웓지 분석!")
+        lines.append("     예) 맨시티: 1.25, 살포드: 12.00, 무승부: 6.50")
 
     return "\n".join(lines)
+
