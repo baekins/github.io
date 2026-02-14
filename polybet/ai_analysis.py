@@ -6,7 +6,7 @@ from typing import Optional
 
 
 async def ai_research(event_title: str, api_key: str, markets_summary: str = "") -> str:
-    """클로드 API로 경기 실시간 정보 조사 및 분석"""
+    """Claude API로 경기 실시간 정보 조사 및 분석"""
     try:
         import anthropic
     except ImportError:
@@ -19,7 +19,7 @@ async def ai_research(event_title: str, api_key: str, markets_summary: str = "")
 
 이벤트: {event_title}
 
-{"현재 마켓 데이터:" + chr(10) + markets_summary if markets_summary else ""}
+{f"현재 마켓 데이터:{chr(10)}{markets_summary}" if markets_summary else ""}
 
 반드시 조사할 항목:
 1. 최근 폼 (최근 3~5경기 성적)
@@ -36,10 +36,10 @@ async def ai_research(event_title: str, api_key: str, markets_summary: str = "")
 
 간결하고 핵심만 정리해주세요. 불필요한 서론은 빼고 바로 분석 결과를 출력하세요."""
 
-    try:
-        client = anthropic.Anthropic(api_key=api_key.strip())
+    client = anthropic.Anthropic(api_key=api_key.strip())
 
-        # 웹 검색 도구 사용
+    # 1차 시도: 웹 검색 도구 포함
+    try:
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=2048,
@@ -50,21 +50,45 @@ async def ai_research(event_title: str, api_key: str, markets_summary: str = "")
             }],
             messages=[{"role": "user", "content": prompt}]
         )
-
-        # 응답에서 텍스트 추출
         text_parts = []
         for block in response.content:
             if hasattr(block, 'text'):
                 text_parts.append(block.text)
-
         if text_parts:
             return "\n".join(text_parts)
-        return "(AI 분석 결과 없음)"
-
+    except anthropic.AuthenticationError:
+        return "(인증 실패 – API 키가 올바른지, 결제 정보가 등록되어 있는지 확인하세요)\n(https://console.anthropic.com/settings/billing 에서 확인)"
+    except anthropic.PermissionError:
+        return "(권한 오류 – 이 API 키로는 해당 기능을 사용할 수 없습니다)\n(API 키 권한을 확인하세요)"
+    except anthropic.BadRequestError as e:
+        # 웹 검색 미지원 시 일반 분석으로 폴백
+        pass
+    except anthropic.RateLimitError:
+        return "(API 요청 한도 초과 – 잠시 후 다시 시도하세요)"
     except Exception as e:
+        # 웹 검색 관련 오류면 폴백 시도
         err = str(e)
-        if "authentication" in err.lower() or "api_key" in err.lower() or "invalid" in err.lower():
-            return f"(API 키 오류: 올바른 Claude API 키를 입력하세요)"
-        if "rate" in err.lower():
-            return f"(API 요청 한도 초과 – 잠시 후 다시 시도하세요)"
-        return f"(AI 분석 오류: {err})"
+        if "web_search" in err.lower() or "tool" in err.lower():
+            pass  # 아래 폴백으로 진행
+        else:
+            return f"(AI 분석 오류: {err})"
+
+    # 2차 시도: 웹 검색 없이 일반 분석
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2048,
+            messages=[{"role": "user", "content": prompt + "\n\n(웹 검색 없이 기존 지식으로 분석해주세요)"}]
+        )
+        text_parts = []
+        for block in response.content:
+            if hasattr(block, 'text'):
+                text_parts.append(block.text)
+        if text_parts:
+            return "[웹 검색 미지원 – 기존 지식 기반 분석]\n\n" + "\n".join(text_parts)
+    except anthropic.AuthenticationError:
+        return "(인증 실패 – API 키가 올바른지, 결제 정보가 등록되어 있는지 확인하세요)\n(https://console.anthropic.com/settings/billing 에서 확인)"
+    except Exception as e:
+        return f"(AI 분석 오류: {e})"
+
+    return "(AI 분석 결과 없음)"
