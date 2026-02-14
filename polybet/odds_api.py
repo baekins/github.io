@@ -1,10 +1,10 @@
-"""The Odds API ì°ë ëª¨ë.
+"""The Odds API 연동 모듈.
 
-ë¬´ë£ API í¤ë¡ ì¸ë¶ ë¶ë©ì´ì»¤ ë°°ë¹ë¥ ì ìë ìì§í©ëë¤.
-API í¤ê° ìì¼ë©´ gracefully ì¤íµí©ëë¤.
+무료 API 키로 외부 북메이커 배당률을 자동 수집합니다.
+API 키가 없으면 gracefully 스킵합니다.
 
-ì¤ì : .env íì¼ì ODDS_API_KEY=your_key ì¶ê°
-ë¬´ë£ ê°ì: https://the-odds-api.com/
+설정: .env 파일에 ODDS_API_KEY=your_key 추가
+무료 가입: https://the-odds-api.com/
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from typing import Optional
 API_KEY = os.environ.get("ODDS_API_KEY", "")
 BASE_URL = "https://api.the-odds-api.com/v4"
 
-# Polymarket íì´íìì ì¤í¬ì¸  ì¢ë¥ë¥¼ ì¶ì íë ë§¤í
+# Polymarket 타이틀에서 스포츠 종류를 추정하는 매핑
 SPORT_KEYWORDS = {
     "soccer": ["fc", "united", "city", "real", "barcelona", "arsenal", "chelsea",
                "liverpool", "juventus", "bayern", "psg", "milan", "inter",
@@ -40,9 +40,9 @@ SPORT_KEYWORDS = {
     "boxing_boxing": ["boxing", "bout", "fight night"],
 }
 
-# The Odds API ì¤í¬ì¸  í¤ ë§¤í
+# The Odds API 스포츠 키 매핑
 ODDS_API_SPORTS = {
-    "soccer": "soccer_epl",  # ê¸°ë³¸ê°, ì¤ì ë¡ë ë¦¬ê·¸ë³ë¡ ë¤ë¦
+    "soccer": "soccer_epl",  # 기본값, 실제로는 리그별로 다름
     "basketball_nba": "basketball_nba",
     "basketball_ncaab": "basketball_ncaab",
     "americanfootball_nfl": "americanfootball_nfl",
@@ -67,7 +67,7 @@ SOCCER_LEAGUES = {
 
 
 def _detect_sport(title: str) -> Optional[str]:
-    """ë§ì¼ íì´íìì ì¤í¬ì¸  ì¢ë¥ë¥¼ ì¶ì í©ëë¤."""
+    """마켓 타이틀에서 스포츠 종류를 추정합니다."""
     title_lower = title.lower()
     for sport, keywords in SPORT_KEYWORDS.items():
         for kw in keywords:
@@ -82,7 +82,7 @@ def _detect_sport(title: str) -> Optional[str]:
 
 
 def _fetch_json(url: str) -> dict:
-    """URLìì JSONì ê°ì ¸íµëë¤."""
+    """URL에서 JSON을 가져툵니다."""
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -92,7 +92,7 @@ def _fetch_json(url: str) -> dict:
 
 
 def _match_event(events: list, title: str) -> Optional[dict]:
-    """ì´ë²¤í¸ ëª©ë¡ìì íì´íê³¼ ê°ì¥ ì ì¬í ì´ë²¤í¸ë¥¼ ì°¾ìµëë¤."""
+    """이벤트 목록에서 타이틀과 가장 유사한 이벤트를 찾습니다."""
     title_lower = title.lower()
     best_match = None
     best_score = 0
@@ -115,10 +115,10 @@ def _match_event(events: list, title: str) -> Optional[dict]:
 
 
 async def fetch_external_odds(title: str) -> dict[str, dict[str, float]]:
-    """ì¸ë¶ ë¶ë©ì´ì»¤ ë°°ë¹ë¥ ì ìì§í©ëë¤.
+    """외부 북메이커 배당률을 수집합니다.
 
     Returns:
-        {bookmaker_name: {outcome_name: decimal_odds}} ííì ëìëë¦¬
+        {bookmaker_name: {outcome_name: decimal_odds}} 형태의 딕셔너리
     """
     if not API_KEY:
         return {}
@@ -155,5 +155,5 @@ async def fetch_external_odds(title: str) -> dict[str, dict[str, float]]:
             if odds_map:
                 result[bookie_name] = odds_map
 
-    # ìì 5ê° ë¶ë©ì´ì»¤ë§ ë°í
+    # 상위 5개 북메이커만 반환
     return dict(list(result.items())[:5])
