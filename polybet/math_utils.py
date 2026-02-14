@@ -13,14 +13,44 @@ def devig_decimal_odds(odds: dict[str, float]) -> dict[str, float]:
     return normalize_probs(inv)
 
 
-def blended_fair_probs(mkt: dict[str, float], ref: dict[str, float] | None) -> tuple[dict[str, float], str]:
-    if not ref:
-        return normalize_probs(dict(mkt)), "NO EDGE (no external reference)"
+def blended_fair_probs(prices: dict[str, float], mids: dict[str, float] | None = None, ref: dict[str, float] | None = None) -> tuple[dict[str, float], str]:
+    """Blend market prices, CLOB mid-prices, and external reference odds."""
+    sources = [("market", prices)]
+    if mids:
+        sources.append(("mid", mids))
+    if ref:
+        sources.append(("ref", ref))
+
+    if len(sources) == 1:
+        return normalize_probs(dict(prices)), "NO EDGE (no external reference)"
+
+    all_outcomes = set(prices.keys())
+    for _, s in sources:
+        all_outcomes |= set(s.keys())
 
     out: dict[str, float] = {}
-    for outcome, mkt_prob in mkt.items():
-        out[outcome] = 0.7 * ref.get(outcome, mkt_prob) + 0.3 * mkt_prob
-    return normalize_probs(out), "Blended 70% reference / 30% market"
+    if ref and mids:
+        # 3-source blend: 50% ref, 30% mid, 20% market
+        for o in all_outcomes:
+            p = prices.get(o, 0.0)
+            m = mids.get(o, p)
+            r = ref.get(o, p)
+            out[o] = 0.5 * r + 0.3 * m + 0.2 * p
+        return normalize_probs(out), "Blended 50% ref / 30% mid / 20% market"
+    elif ref:
+        # 2-source: 70% ref, 30% market
+        for o in all_outcomes:
+            p = prices.get(o, 0.0)
+            r = ref.get(o, p)
+            out[o] = 0.7 * r + 0.3 * p
+        return normalize_probs(out), "Blended 70% ref / 30% market"
+    else:
+        # 2-source: 60% mid, 40% market
+        for o in all_outcomes:
+            p = prices.get(o, 0.0)
+            m = mids.get(o, p)
+            out[o] = 0.6 * m + 0.4 * p
+        return normalize_probs(out), "Blended 60% mid / 40% market"
 
 
 def fractional_kelly_fraction(prob: float, price: float, fraction: float) -> float:
