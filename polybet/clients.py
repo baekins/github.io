@@ -120,6 +120,24 @@ class GammaClient:
             },
         )
 
+    async def fetch_market(self, slug: str):
+        """Fetch market by slug and return MarketSnapshot, trying market then event endpoints."""
+        try:
+            raw = await self.fetch_market_by_slug(slug)
+            if raw:
+                return parse_market_payload(raw)
+        except Exception:
+            pass
+        try:
+            raw = await self.fetch_event_by_slug(slug)
+            if raw and isinstance(raw, dict):
+                markets = raw.get("markets", [])
+                if markets:
+                    return parse_market_payload(markets[0])
+        except Exception:
+            pass
+        return None
+
 
 def _to_dt(value: Any) -> datetime | None:
     if not value:
@@ -210,7 +228,7 @@ def _is_sports_related(item: dict[str, Any]) -> bool:
     return False
 
 
-def collect_search_candidates(search_payload: dict[str, Any]) -> list[Candidate]:
+def _parse_search_candidates(search_payload: dict[str, Any]) -> list[Candidate]:
     items: list[dict[str, Any]] = []
     for key in ("markets", "events", "data", "results"):
         value = search_payload.get(key)
@@ -233,6 +251,12 @@ def collect_search_candidates(search_payload: dict[str, Any]) -> list[Candidate]
             )
         )
     return candidates
+
+
+async def collect_search_candidates(gamma, query: str) -> list:
+    """Search for markets and return candidate list."""
+    search_result = await gamma.search(query)
+    return _parse_search_candidates(search_result)
 
 
 def choose_best_candidate(candidates: list[Candidate]) -> Candidate | None:
