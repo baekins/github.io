@@ -72,7 +72,7 @@ class PolyBetApp:
 
         # í¤ë
         hdr = ttk.Frame(self.root)
-        hdr.pack(fill="x", **pad, pady=(16, 4))
+        hdr.pack(fill="x", padx=16, pady=(16, 4))
         ttk.Label(hdr, text="PolyBet", style="Title.TLabel").pack(side="left")
         ttk.Label(hdr, text="Polymarket ì¤ìê° ë² í ë¶ì",
                   style="Sub.TLabel").pack(side="left", padx=(12, 0))
@@ -88,7 +88,7 @@ class PolyBetApp:
 
         # ìë ¥ ìì­
         inp_frame = ttk.Frame(self.root)
-        inp_frame.pack(fill="x", **pad, pady=(8, 2))
+        inp_frame.pack(fill="x", padx=16, pady=(8, 2))
         ttk.Label(inp_frame, text="ë§ì¼ URL ëë ì¬ë¬ê·¸:").pack(anchor="w")
 
         row = ttk.Frame(inp_frame)
