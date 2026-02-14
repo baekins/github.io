@@ -130,7 +130,7 @@ async def analyze(text: str, ref_odds_text: str = "") -> str:
     mids = {}
     if SETTINGS.enable_clob_reads:
         mids = {o.name: o.mid for o in snapshot.outcomes if o.mid is not None}
-    fair_probs = blended_fair_probs(prices, mids, ref_odds)
+    fair_probs, blend_method = blended_fair_probs(prices, mids, ref_odds)
 
     # 결과 구성
     lines = []
